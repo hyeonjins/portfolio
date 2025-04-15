@@ -10,27 +10,21 @@ def get_data(start_date='2012-01-01', end_date='2021-12-31', max_workers=20):
     """
     데이터 로딩, 병합, 주식 데이터 다운로드, 무위험 수익률 계산
     """
-    # CSV 파일 읽기
-    # df = pd.read_csv('./data/parsed_result_sector_prompt_version_31_0106_cot_10y_all.csv')
-    # tbl = pd.read_csv('./data/parsed_result_sector_prompt_version_31_1104_10y_all.csv')
-    # df = df.merge(tbl[['permno', 'ticker', 'year', 'month', 'shrout']], on=['permno', 'year', 'month'], how='inner')
-    
-    df = pd.read_csv('./data/parsed_result_ds_prob_7_snp500_10y_new_2012_2021_250409_all.csv')
+    df = pd.read_csv('./data/parsed_result_ds_prob_7_snp500_10y_new_2012_2021_250409_all.csv') # 데이터 로드
     # df_under_12 = df.groupby(['permno', 'year'])['month'].count().reset_index().query('month != 12')['permno'].unique()#.sort_values('month', ascending=False)#['permno'].nunique()#['month'].value_counts()
     # df = df[~df.isin(df_under_12).any(axis=1)]
     
-    df['market_cap'] = df['shrout'] * abs(df['prc'])
-    df['date'] = pd.to_datetime(df['date'])
+    df['market_cap'] = df['shrout'] * abs(df['prc']) # 시가총액 계산
+    df['date'] = pd.to_datetime(df['date']) # 날짜 형식 변환
     
-    # 티커 추출
-    unique_tickers = df['ticker'].unique().tolist()
-    price_series_list = []
+    unique_tickers = df['ticker'].unique().tolist() # 고유 티커 목록
+    price_series_list = [] # 티커별 주가 데이터 저장 리스트
 
-    # 티커별 주가 데이터를 다운로드하는 함수
+    # 티커별 주가 데이터 다운로드
     def download_ticker_data(ticker_name):
         try:
             ticker = yf.Ticker(ticker_name)
-            prices = ticker.history(start=start_date, end=end_date, auto_adjust=True)['Close'].dropna()
+            prices = ticker.history(start=start_date, end=end_date, auto_adjust=True)['Close'].dropna() # Adjusted Close 다운로드
             if not prices.empty:
                 return ticker_name, prices.rename(ticker_name)
             return None
@@ -50,17 +44,14 @@ def get_data(start_date='2012-01-01', end_date='2021-12-31', max_workers=20):
                 ticker_name, price_series = result
                 price_series_list.append(price_series)
 
-    # 값 결합
+    # 다운로드한 주식 데이터 결합
     stock_data = pd.concat(price_series_list, axis=1)
     stock_data.index = pd.to_datetime(stock_data.index.tz_localize(None))
     stock_data = stock_data.sort_index()
     
-    # 결측치 제거 (모든 티커의 데이터가 존재하는 행만 남김)
-    stock_data = stock_data.dropna(axis=0, how='all')
+    stock_data = stock_data.dropna(axis=0, how='all') # 결측치 제거 (모든 티커의 데이터가 존재하는 행만 남김)
     
-    # 무위험 수익률 계산 (연간 평균)
-    rf = yf.download('^IRX', start=start_date, end=end_date,
-                     auto_adjust=True, progress=False)['Close'].mean().iloc[0] / 100
+    rf = yf.download('^IRX', start=start_date, end=end_date, auto_adjust=True, progress=False)['Close'].mean().iloc[0] / 100 # 무위험 수익률 계산 (연간 평균)
     
     return df, stock_data, rf
 
@@ -68,11 +59,11 @@ def get_rebalancing_dates(stock_data, frequency='yearly'):
     """
     리밸런싱 날짜 계산 (월별, 분기별, 년도별)
     """
-    if frequency == 'monthly':
+    if frequency == 'monthly': # 월별 리밸런싱
         rebalancing_dates = stock_data.resample('M').last().index
-    elif frequency == 'quarterly':
+    elif frequency == 'quarterly': # 분기별 리밸런싱
         rebalancing_dates = stock_data.resample('Q').last().index
-    elif frequency == 'yearly':
+    elif frequency == 'yearly': # 연도별 리밸런싱
         monthly_index = stock_data.resample('M').last().index
         rebalancing_dates = monthly_index[monthly_index.month == 6]
     return rebalancing_dates
@@ -86,11 +77,13 @@ def get_is_oos(stock_data, rebalancing_dates, idx):
     outsample_start = rebalancing_dates[idx+1]
     outsample_end = rebalancing_dates[idx+2]
     
-    insample_data = stock_data.loc[insample_start:insample_end].pct_change().iloc[1:]
-    outsample_data = stock_data.loc[outsample_start:outsample_end].pct_change().iloc[1:]
+    insample_data = stock_data.loc[insample_start:insample_end].pct_change().iloc[1:] # insample 데이터 추출
+    outsample_data = stock_data.loc[outsample_start:outsample_end].pct_change().iloc[1:] # outsample 데이터 추출
     
     # 두 기간에서 공통 데이터 보유 티커 선택
     combined_data = pd.concat([insample_data, outsample_data], axis=0).dropna(axis=1)
+    
+    # 다시 분리
     insample_data = combined_data.loc[insample_data.index]
     outsample_data = combined_data.loc[outsample_data.index]
     # print("is:", insample_data.head())
@@ -128,7 +121,7 @@ class SharpeCalculator:
     def method1(self, metrics_dict):
         # 리밸런싱 구간별 수익률 평균 및 표준편차 기반 계산
         ret = np.mean(metrics_dict["return"])
-        std = np.std(metrics_dict["return"])
+        std = np.std(metrics_dict["return"]) # 각 return의 std
         sharpe = (ret - self.rf) / std
         return ret, std, sharpe
 
@@ -142,9 +135,9 @@ class SharpeCalculator:
     def method3(self, metrics_dict):
         # 각 구간별 결과의 평균 후 Sharpe 계산
         ret = np.mean(metrics_dict["return"])
-        std = np.mean(metrics_dict["std"])
+        std = np.mean(metrics_dict["std"]) # 각 std의 평균
         sharpe = (ret - self.rf) / std
-        avg_sharpe = np.mean(metrics_dict["sharpe"])
+        avg_sharpe = np.mean(metrics_dict["sharpe"]) # 개별 포트폴리오를 평균냈으므로, SR도 평균냄
         return ret, std, sharpe, avg_sharpe
 
 def compute_portfolio_daily_returns(outsample_data, portfolio_df, sign=1):
